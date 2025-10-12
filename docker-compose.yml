@@ -1,0 +1,53 @@
+version: "3.9"
+
+services:
+  sys_agent:
+    build: .
+    container_name: sys-agent
+    restart: unless-stopped
+
+    # 共享主機命名空間，讓 psutil/溫度/NIC I/O 讀到主機資訊
+    network_mode: host
+    pid: host
+
+    # 只需讀 /sys；/proc 會因 pid: host 自然對應到主機
+    volumes:
+      - /sys:/sys:ro
+      - /dev:/dev:ro   # 非必須，但若未來需要讀一些裝置屬性可用（唯讀即可）
+
+    # 最低權限即可；讀取 /sys /proc 不需要 privileged
+    privileged: false
+    security_opt:
+      - no-new-privileges:true
+    read_only: true   # 容器根檔系統唯讀
+    tmpfs:
+      - /tmp
+      - /var/tmp
+
+    environment:
+      BROKER_HOST: "192.168.5.32"
+      BROKER_PORT: "1883"
+      MQTT_USER: "mqtter"
+      MQTT_PASS: "seven777"
+
+  # Web 監控介面 - Nginx 靜態檔案伺服器
+  web_monitor:
+    image: nginx:alpine    # 輕量級 Nginx (~8MB)
+    container_name: monitor-web
+    restart: unless-stopped
+
+    # 對外提供 Web 介面
+    ports:
+      - "8088:80"          # 主機 port 8080 → 容器 port 80
+
+    # 掛載監控頁面
+    volumes:
+      - ./monitor.html:/usr/share/nginx/html/index.html:ro
+
+    # 安全設定
+    security_opt:
+      - no-new-privileges:true
+    read_only: true        # 容器根檔案系統唯讀
+    tmpfs:                 # 臨時檔案使用記憶體
+      - /var/cache/nginx
+      - /var/run
