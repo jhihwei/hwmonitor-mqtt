@@ -1,10 +1,12 @@
 version: "3.9"
 
 services:
+  # 系統監控代理 - 核心服務
   sys_agent:
     build: .
     container_name: sys-agent
     restart: unless-stopped
+    profiles: ["agent", "full"]  # 啟用 agent 或 full profile 時運行
 
     # 共享主機命名空間，讓 psutil/溫度/NIC I/O 讀到主機資訊
     network_mode: host
@@ -25,20 +27,42 @@ services:
       - /var/tmp
 
     environment:
-      BROKER_HOST: "192.168.5.32"
-      BROKER_PORT: "1883"
-      MQTT_USER: "mqtter"
-      MQTT_PASS: "seven777"
+      BROKER_HOST: ${BROKER_HOST}
+      BROKER_PORT: ${BROKER_PORT:-1883}
+      MQTT_USER: ${MQTT_USER}
+      MQTT_PASS: ${MQTT_PASS}
+
+  # MQTT Broker - Mosquitto
+  mqtt_broker:
+    image: eclipse-mosquitto:2.0.21
+    container_name: mqtt-broker
+    restart: unless-stopped
+    profiles: ["broker", "full"]  # 啟用 broker 或 full profile 時運行
+
+    # MQTT 標準端口 + WebSocket
+    ports:
+      - "1883:1883"        # MQTT TCP
+      - "8081:8081"        # MQTT WebSocket (for browser)
+
+    # 配置檔案和密碼檔案
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto_passwd:/mosquitto/config/passwd:ro
+
+    # 安全設定
+    security_opt:
+      - no-new-privileges:true
 
   # Web 監控介面 - Nginx 靜態檔案伺服器
   web_monitor:
     image: nginx:alpine    # 輕量級 Nginx (~8MB)
     container_name: monitor-web
     restart: unless-stopped
+    profiles: ["web", "full"]  # 啟用 web 或 full profile 時運行
 
     # 對外提供 Web 介面
     ports:
-      - "8088:80"          # 主機 port 8080 → 容器 port 80
+      - "${WEB_PORT:-8088}:80"  # 主機 port → 容器 port 80
 
     # 掛載監控頁面
     volumes:
@@ -51,3 +75,4 @@ services:
     tmpfs:                 # 臨時檔案使用記憶體
       - /var/cache/nginx
       - /var/run
+

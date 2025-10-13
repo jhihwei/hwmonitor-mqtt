@@ -13,58 +13,76 @@
 - 📊 **即時監控** - 透過 MQTT 即時推送系統狀態
 - 🌐 **Web 介面** - 現代化響應式監控介面
 - 🔒 **安全設計** - 唯讀檔案系統、最小權限原則
-- 🔧 **易於部署** - 一鍵啟動，無需複雜配置
+- 🔧 **靈活部署** - 支援多種服務組合（agent、broker、web）
 - 📡 **多主機支援** - 支援監控多台主機
-
-## 📸 預覽
-
-監控介面提供以下資訊：
-
-- **CPU** - 使用率、核心數、溫度
-- **RAM** - 記憶體使用量和百分比
-- **Swap** - 交換空間使用量和百分比
-- **磁碟 I/O** - 各磁碟讀寫速度、IOPS
-- **網路 I/O** - 各網路介面 RX/TX 流量（MB/s）
 
 ## 🚀 快速開始
 
 ### 前置需求
 
 - Docker & Docker Compose
-- MQTT Broker（支援 WebSocket）
+- MQTT Broker（使用外部 broker 或本專案內建的 mosquitto）
 
-### 一鍵部署
+### 1. 配置環境變數
 
 ```bash
-# 克隆專案
-git clone https://github.com/your-username/hwmonitor-mqtt.git
-cd hwmonitor-mqtt
+# 複製範例檔案
+cp .env.example .env
 
-# 啟動服務
-docker compose up -d
-
-# 訪問監控介面
-open http://localhost:8080
+# 編輯 .env 檔案，設定 MQTT Broker 連線資訊
+nano .env
 ```
 
-### 配置說明
+`.env` 檔案內容：
 
-編輯 `docker-compose.yml` 設定 MQTT Broker 連線：
-
-```yaml
-environment:
-  BROKER_HOST: "192.168.5.32"  # MQTT Broker IP
-  BROKER_PORT: "1883"           # MQTT Port
-  MQTT_USER: "mqtter"           # MQTT 使用者名稱
-  MQTT_PASS: "seven777"         # MQTT 密碼
+```bash
+BROKER_HOST=192.168.1.100  # MQTT Broker IP
+BROKER_PORT=1883           # MQTT Port
+MQTT_USER=your_username    # MQTT 使用者名稱
+MQTT_PASS=your_password    # MQTT 密碼
+WEB_PORT=8088              # Web 介面端口
 ```
 
-編輯 `monitor.html` 設定 WebSocket 連線：
+### 2. 選擇部署模式
 
-```javascript
-const brokerUrl = "ws://192.168.5.32:9001";  // MQTT WebSocket URL
-const username = "mqtter";
-const password = "seven777";
+#### 模式 A：只啟動監控代理（連接到外部 MQTT Broker）
+
+適用於：已有 MQTT Broker，只需要安裝監控代理到各主機
+
+```bash
+docker compose --profile agent up -d
+```
+
+#### 模式 B：啟動監控代理 + Web 介面
+
+適用於：已有 MQTT Broker，需要監控代理和 Web 介面
+
+```bash
+docker compose --profile agent --profile web up -d
+```
+
+#### 模式 C：完整部署（Agent + Broker + Web）
+
+適用於：從零開始，需要完整的監控系統
+
+```bash
+docker compose --profile full up -d
+```
+
+或簡化為：
+
+```bash
+docker compose --profile agent --profile broker --profile web up -d
+```
+
+### 3. 訪問監控介面
+
+```bash
+# 預設端口 8088
+open http://localhost:8088
+
+# 或使用自訂端口（在 .env 中設定 WEB_PORT）
+open http://localhost:YOUR_PORT
 ```
 
 ## 📡 架構說明
@@ -72,7 +90,7 @@ const password = "seven777";
 ```
 ┌─────────────┐     MQTT      ┌──────────────┐
 │  sys_agent  │──────────────>│ MQTT Broker  │
-│  (Docker)   │   publish     │  (External)  │
+│  (Docker)   │   publish     │ (mqtt_broker)│
 └─────────────┘               └──────┬───────┘
                                      │
                                      │ WebSocket
@@ -86,19 +104,30 @@ const password = "seven777";
 
 ### 組件說明
 
-#### 1. sys_agent（系統監控代理）
+| 組件 | 說明 | Profile |
+|------|------|---------|
+| **sys_agent** | 系統監控代理，收集硬體資訊並發送到 MQTT | `agent` |
+| **mqtt_broker** | Mosquitto MQTT Broker（含 WebSocket 支援） | `broker` |
+| **web_monitor** | Nginx 靜態 Web 監控介面 | `web` |
+
+#### sys_agent（系統監控代理）
 
 - 使用 Python + psutil 收集系統資訊
 - 每秒發送一次監控資料到 MQTT
 - Topic: `hwmon/<hostname>`
 - 支援溫度、磁碟、網路監控
 
-#### 2. web_monitor（Web 監控介面）
+#### mqtt_broker（MQTT Broker）
+
+- 基於 Eclipse Mosquitto 2.0.21
+- 支援 MQTT TCP (1883) 和 WebSocket (8081)
+- 使用 `mosquitto.conf` 和 `mosquitto_passwd` 配置
+
+#### web_monitor（Web 監控介面）
 
 - Nginx Alpine 靜態檔案伺服器
 - 透過 MQTT WebSocket 訂閱監控資料
 - 響應式設計，支援手機/平板/桌面
-- Port: 8080
 
 ## 🛠️ 常用指令
 
@@ -115,16 +144,21 @@ docker compose logs -f sys_agent
 # 停止服務
 docker compose down
 
-# 重建並啟動
-docker compose up -d --build
+# 重建並啟動（以 agent 為例）
+docker compose --profile agent up -d --build
 
 # 重啟特定服務
 docker compose restart sys_agent
+
+# 列出所有 profiles 的服務
+docker compose config --profiles
 ```
 
 ## 📊 監控資料格式
 
-MQTT 訊息格式（JSON）：
+**MQTT Topic**: `hwmon/<hostname>`
+
+**訊息格式（JSON）**：
 
 ```json
 {
@@ -186,32 +220,53 @@ MQTT 訊息格式（JSON）：
 
 ### 多主機監控
 
-每台主機運行一個 `sys_agent`，發送到同一個 MQTT Broker：
+每台主機只需運行 `sys_agent`，連接到同一個 MQTT Broker：
 
 ```bash
-# 主機 1
-docker compose up -d sys_agent
+# 主機 1（運行 Agent + Broker + Web）
+docker compose --profile full up -d
 
-# 主機 2
-docker compose up -d sys_agent
+# 主機 2（只運行 Agent）
+docker compose --profile agent up -d
 
-# 主機 3
-docker compose up -d sys_agent
-
-# Web 介面（任一台主機或獨立伺服器）
-docker compose up -d web_monitor
+# 主機 3（只運行 Agent）
+docker compose --profile agent up -d
 ```
 
 Web 介面會自動顯示所有主機的監控資料。
 
 ### 自訂 Web Server Port
 
-修改 `docker-compose.yml`：
+編輯 `.env` 檔案：
 
-```yaml
-web_monitor:
-  ports:
-    - "3000:80"  # 使用 3000 port
+```bash
+WEB_PORT=3000  # 使用 3000 port
+```
+
+### 配置內建 MQTT Broker
+
+如果使用內建的 `mqtt_broker`，需要配置：
+
+1. **編輯 mosquitto.conf**：設定監聽端口、WebSocket 等
+2. **建立密碼檔**：
+
+```bash
+# 建立 mosquitto 密碼檔
+docker run -it --rm eclipse-mosquitto:2.0.21 \
+  mosquitto_passwd -c -b /tmp/passwd your_username your_password
+
+# 複製到專案目錄
+cp /tmp/passwd ./mosquitto_passwd
+```
+
+### 自訂 Web 介面 MQTT 連線
+
+編輯 `monitor.html` 中的 WebSocket 連線設定：
+
+```javascript
+const brokerUrl = "ws://YOUR_BROKER_IP:8081";  // MQTT WebSocket URL
+const username = "your_username";
+const password = "your_password";
 ```
 
 ### MQTT 測試
@@ -223,8 +278,8 @@ web_monitor:
 sudo apt install mosquitto-clients
 
 # 訂閱監控主題
-mosquitto_sub -h 192.168.5.32 -p 1883 \
-  -u mqtter -P seven777 \
+mosquitto_sub -h YOUR_BROKER_IP -p 1883 \
+  -u your_username -P your_password \
   -t "hwmon/#" -v
 
 # 預期輸出
@@ -245,7 +300,7 @@ hwmon/server-01 {"cpu": {...}, "memory": {...}, ...}
 
 1. **使用 HTTPS** - 透過 Caddy 或 Traefik 反向代理
 2. **啟用認證** - 在 Nginx 前加上 Basic Auth
-3. **環境變數** - 使用 `.env` 檔案管理敏感資訊
+3. **環境變數** - 使用 `.env` 檔案管理敏感資訊（不要提交到 Git）
 4. **網路隔離** - 限制訪問 IP 範圍
 5. **定期更新** - 保持 Docker 映像檔最新
 
@@ -255,7 +310,7 @@ hwmon/server-01 {"cpu": {...}, "memory": {...}, ...}
 
 ```bash
 # 1. 檢查 Broker 是否運行
-telnet 192.168.5.32 1883
+telnet YOUR_BROKER_IP 1883
 
 # 2. 檢查 Agent 日誌
 docker compose logs sys_agent | tail -20
@@ -268,18 +323,18 @@ docker compose config | grep BROKER
 
 ```bash
 # 1. 確認 port 沒被佔用
-sudo netstat -tuln | grep 8080
+sudo netstat -tuln | grep 8088
 
 # 2. 確認容器運行
 docker compose ps web_monitor
 
 # 3. 測試 HTTP 連線
-curl -v http://localhost:8080
+curl -v http://localhost:8088
 ```
 
 ### 監控介面顯示「連線中」
 
-1. 確認 MQTT Broker 啟用 WebSocket（通常是 port 9001）
+1. 確認 MQTT Broker 啟用 WebSocket（通常是 port 8081）
 2. 開啟瀏覽器 DevTools → Console 查看錯誤訊息
 3. 確認 `monitor.html` 中的 WebSocket 連線設定正確
 4. 檢查防火牆是否阻擋 WebSocket 連線
@@ -289,23 +344,8 @@ curl -v http://localhost:8080
 | 組件 | 記憶體使用 | CPU 使用 | 啟動時間 |
 |------|-----------|---------|---------|
 | sys_agent | ~50MB | <1% | ~2秒 |
+| mqtt_broker | ~20MB | <0.5% | ~1秒 |
 | web_monitor | ~10MB | <0.5% | ~1秒 |
-
-## 🛣️ 未來規劃
-
-- [ ] 支援 GPU 監控（NVIDIA、AMD）
-- [ ] 歷史資料記錄（InfluxDB 整合）
-- [ ] Grafana 儀表板範本
-- [ ] 告警系統（閾值觸發）
-- [ ] Docker Health Check
-- [ ] Kubernetes 部署範例
-- [ ] 更多溫度感測器支援
-
-## 📚 相關文件
-
-- [QUICKSTART.md](QUICKSTART.md) - 快速啟動指南
-- [WEB_SERVER.md](WEB_SERVER.md) - Web Server 詳細說明
-- [CHANGES.md](CHANGES.md) - 更新紀錄
 
 ## 🤝 貢獻
 
@@ -319,12 +359,9 @@ MIT License - 詳見 [LICENSE](LICENSE) 檔案
 
 - [psutil](https://github.com/giampaolo/psutil) - 系統監控函式庫
 - [Paho MQTT](https://github.com/eclipse/paho.mqtt.python) - MQTT 客戶端
+- [Eclipse Mosquitto](https://mosquitto.org/) - MQTT Broker
 - [Nginx](https://nginx.org/) - Web 伺服器
 - [Tailwind CSS](https://tailwindcss.com/) - UI 框架
-
-## 📞 聯絡
-
-如有問題或建議，歡迎開啟 Issue 討論。
 
 ---
 
