@@ -41,17 +41,20 @@ mqtt_stats = {
     "last_error": None,
 }
 
-def on_connect(client, userdata, flags, rc, properties=None):
-    mqtt_stats["is_connected"] = (rc == 0)
-    if rc == 0:
+def on_connect(client, userdata, connect_flags, reason_code, properties=None):
+    mqtt_stats["is_connected"] = (reason_code == 0)
+    if reason_code == 0:
         print(f"✅ MQTT connected to {BROKER_HOST}:{BROKER_PORT}")
+        mqtt_stats["last_error"] = None
     else:
-        print(f"❌ MQTT connect rc={rc}")
+        print(f"❌ MQTT connect failed: reason_code={reason_code}")
+        mqtt_stats["last_error"] = f"Connect failed: {reason_code}"
 mqtt_client.on_connect = on_connect
 
-def on_disconnect(client, userdata, rc, properties=None):
+def on_disconnect(client, userdata, disconnect_flags, reason_code, properties=None):
     mqtt_stats["is_connected"] = False
-    print(f"⚠️ MQTT disconnected rc={rc}")
+    print(f"⚠️ MQTT disconnected: reason_code={reason_code}")
+    mqtt_stats["last_error"] = f"Disconnected: {reason_code}"
 mqtt_client.on_disconnect = on_disconnect
 
 def mqtt_connect():
@@ -406,11 +409,31 @@ async def loop_publish():
         await asyncio.sleep(1)
 
 async def mqtt_reconnector():
+    """自動重連機制，使用指數退避策略"""
+    retry_delay = 3  # 初始重連延遲（秒）
+    max_delay = 60   # 最大重連延遲（秒）
+
     while True:
         if not mqtt_client.is_connected():
             mqtt_stats["reconnects"] += 1
+            print(f"🔄 嘗試重連 MQTT (第 {mqtt_stats['reconnects']} 次)...")
             mqtt_connect()
-        await asyncio.sleep(3)
+
+            # 等待連線結果
+            await asyncio.sleep(2)
+
+            # 根據連線狀態調整延遲
+            if mqtt_stats["is_connected"]:
+                retry_delay = 3  # 重連成功，重置延遲
+            else:
+                # 連線失敗，使用指數退避
+                retry_delay = min(retry_delay * 2, max_delay)
+                print(f"⏳ 重連失敗，{retry_delay} 秒後重試")
+        else:
+            # 已連線，保持短間隔檢查
+            retry_delay = 3
+
+        await asyncio.sleep(retry_delay)
 
 # ===== MAIN =====
 async def main():
