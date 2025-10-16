@@ -3,7 +3,17 @@
     "allow": [
       "Bash(docker compose:*)",
       "Bash(echo:*)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(uv sync:*)",
+      "Bash(uv run:*)",
+      "Bash(mosquitto_sub:*)",
+      "Bash(timeout 10 uv run:*)",
+      "Bash(timeout 15 uv run python:*)",
+      "Bash(timeout 8 uv run python test_mqtt_receive.py)",
+      "Bash(timeout 8 python3 test_mqtt_receive.py)",
+      "Bash(cp:*)",
+      "Bash(timeout 8 uv run python tui_viewer_lcd.py)",
+      "Bash(chmod:*)"
     ],
     "deny": [],
     "ask": []

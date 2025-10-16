@@ -18,6 +18,9 @@ from typing import Any, Dict, Optional
 
 import psutil
 from paho.mqtt import client as mqtt
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ===== MQTT CONFIG =====
 BROKER_HOST = os.getenv("BROKER_HOST", "192.168.5.32")
