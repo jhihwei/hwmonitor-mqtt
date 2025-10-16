@@ -20,7 +20,8 @@
       "Bash(./compare_versions.sh:*)",
       "mcp__context7__resolve-library-id",
       "mcp__context7__get-library-docs",
-      "Bash(timeout 8 uv run python tui_viewer.py)"
+      "Bash(timeout 8 uv run python tui_viewer.py)",
+      "Bash(uv pip install:*)"
     ],
     "deny": [],
     "ask": []

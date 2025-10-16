@@ -13,10 +13,12 @@ import time
 from collections import deque
 from textual.app import App, ComposeResult
 from textual.containers import Vertical, Horizontal, Container
-from textual.widgets import Header, Footer, Static, Label
+from textual.widgets import Header, Static, Label
 from textual.reactive import reactive
 import paho.mqtt.client as mqtt
 from dotenv import load_dotenv
+import psutil
+import socket
 
 load_dotenv()
 
@@ -42,6 +44,70 @@ def format_bytes(byte_count):
         byte_count /= power
         n += 1
     return f"{byte_count:.1f}{power_labels[n]}"
+
+class HostInfoFooter(Static):
+    """Custom footer showing host CPU and temperature."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.hostname = socket.gethostname()
+
+    def get_host_temp(self) -> str:
+        """Get Raspberry Pi CPU temperature."""
+        try:
+            temps = psutil.sensors_temperatures()
+            # Raspberry Pi typically reports under 'cpu_thermal' or 'thermal_zone0'
+            for sensor_name in ['cpu_thermal', 'thermal_zone0', 'cpu-thermal']:
+                if sensor_name in temps and temps[sensor_name]:
+                    return f"{temps[sensor_name][0].current:.0f}°C"
+            # Fallback: try any available sensor
+            for sensor_name, entries in temps.items():
+                if entries:
+                    return f"{entries[0].current:.0f}°C"
+        except Exception:
+            pass
+        return "N/A"
+
+    def get_host_cpu(self) -> float:
+        """Get host CPU usage percentage."""
+        try:
+            return psutil.cpu_percent(interval=0)
+        except Exception:
+            return 0.0
+
+    def on_mount(self) -> None:
+        """Update footer periodically."""
+        self.set_interval(1, self.update_display)
+        self.update_display()
+
+    def update_display(self) -> None:
+        """Update footer content."""
+        cpu = self.get_host_cpu()
+        temp = self.get_host_temp()
+
+        # Color code based on CPU usage
+        if cpu >= 75:
+            cpu_color = "red"
+        elif cpu >= 50:
+            cpu_color = "yellow"
+        else:
+            cpu_color = "green"
+
+        # Color code based on temperature
+        temp_val = temp.replace("°C", "").strip()
+        try:
+            temp_num = float(temp_val)
+            if temp_num >= 75:
+                temp_color = "red"
+            elif temp_num >= 65:
+                temp_color = "yellow"
+            else:
+                temp_color = "cyan"
+        except ValueError:
+            temp_color = "dim"
+
+        content = f"[bold]{self.hostname}[/bold] CPU [{cpu_color}]{cpu:4.1f}%[/{cpu_color}] [{temp_color}]{temp}[/{temp_color}]"
+        self.update(content)
 
 class DeviceDisplay(Static):
     """Ultra-compact device widget for portrait displays."""
@@ -223,8 +289,12 @@ class MonitorApp(App):
         background: $accent-darken-2;
     }
 
-    Footer {
+    HostInfoFooter {
         background: $accent-darken-2;
+        dock: bottom;
+        height: 1;
+        content-align: right middle;
+        padding: 0 1;
     }
     """
 
@@ -239,7 +309,7 @@ class MonitorApp(App):
     def compose(self) -> ComposeResult:
         yield Header()
         yield Container(id="devices_container")
-        yield Footer()
+        yield HostInfoFooter()
 
     def on_mount(self) -> None:
         self.setup_mqtt()
