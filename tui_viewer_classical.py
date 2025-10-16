@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-HW Monitor MQTT TUI Viewer - Portrait Mode
+HW Monitor MQTT TUI Viewer
 - Powered by Textual
-- Optimized for 3.5" 720x1280 display with 24x43 character grid
-- Displays 3 devices per page (7 rows each) without scrolling
-- Ultra-compact layout: zero margins, minimal padding
+- Displays data from agent_sender_async.py
+- Rotates devices every 5 seconds if more than 3 are present.
 """
 import json
 import os
 import time
 from collections import deque
 from textual.app import App, ComposeResult
-from textual.containers import Vertical, Horizontal, Container
+from textual.containers import Grid, Horizontal
 from textual.widgets import Header, Footer, Static, Label
 from textual.reactive import reactive
 import paho.mqtt.client as mqtt
@@ -28,8 +27,7 @@ MQTT_PASS = os.getenv("MQTT_PASS", "seven777")
 TOPIC = "sys/agents/+/metrics"
 
 # --- Display Configuration ---
-# For 3.5" 720x1280 display with 24x43 character grid
-MAX_DEVICES_PER_PAGE = 3  # Optimized for 3 devices in 43 rows
+MAX_DEVICES_PER_PAGE = 3
 ROTATION_INTERVAL_SECONDS = 5
 
 def format_bytes(byte_count):
@@ -44,90 +42,98 @@ def format_bytes(byte_count):
     return f"{byte_count:.1f}{power_labels[n]}"
 
 class DeviceDisplay(Static):
-    """Ultra-compact device widget for portrait displays."""
-
+    """A widget to display data for a single device."""
+    
     device_data = reactive(None, layout=True)
 
     def __init__(self, host_id: str) -> None:
         super().__init__()
         self.host_id = host_id
         self.last_update = time.time()
-        self.title_label = Label(f"[bold white on blue] {self.host_id} [/bold white on blue]")
-        self.stale_label = Label("")
-        self.metrics_label = Label("...")
+        self.title_label = Label(f"[bold white on blue] {self.host_id} [/bold white on blue]", classes="title")
+        self.stale_label = Label("", classes="stale")
+        self.sys_label = Label("...", classes="data")
+        self.io_label = Label("...", classes="data")
 
     def compose(self) -> ComposeResult:
-        with Horizontal(classes="title-row"):
+        with Horizontal(id="title_bar"):
             yield self.title_label
             yield self.stale_label
-        yield self.metrics_label
+        yield self.sys_label
+        yield self.io_label
 
     def watch_device_data(self, data: dict) -> None:
         if not data:
             return
 
         self.last_update = time.time()
-
-        # --- Extract all metrics ---
+        
+        # --- System: CPU / RAM ---
         cpu_percent = data.get("cpu", {}).get("percent_total", 0)
-        ram_percent = data.get("memory", {}).get("ram", {}).get("percent", 0)
-
-        # CPU Temperature
         cpu_temp = "N/A"
         if temps := data.get("temperatures"):
             for source, entries in temps.items():
-                if any(k in source for k in ["cpu", "k10temp", "coretemp"]):
+                if "cpu" in source or "k10temp" in source or "coretemp" in source:
                     if entries:
                         temp_val = entries[0].get('current')
                         if isinstance(temp_val, (int, float)):
                             cpu_temp = f"{temp_val:.0f}°C"
                             break
+        ram_percent = data.get("memory", {}).get("ram", {}).get("percent", 0)
 
-        # Disk Temperature
+        # Color-coded based on usage levels
+        cpu_color = self._get_usage_color(cpu_percent)
+        ram_color = self._get_usage_color(ram_percent)
+        temp_color = self._get_temp_color(cpu_temp)
+
+        self.sys_label.update(
+            f"[bold cyan]CPU:[/bold cyan][{cpu_color}]{cpu_percent:5.1f}%[/{cpu_color}] "
+            f"[{temp_color}]({cpu_temp:>4})[/{temp_color}]  "
+            f"[bold cyan]RAM:[/bold cyan][{ram_color}]{ram_percent:5.1f}%[/{ram_color}]"
+        )
+
+        # --- IO: Network / Disk ---
+        net_total = data.get("network_io", {}).get("total", {}).get("rate", {})
+        net_up = net_total.get("tx_bytes_per_s", 0)
+        net_down = net_total.get("rx_bytes_per_s", 0)
+        
+        disk_io = data.get("disk_io", {})
+        total_read = sum(d.get("rate", {}).get("read_bytes_per_s", 0) for d in disk_io.values())
+        total_write = sum(d.get("rate", {}).get("write_bytes_per_s", 0) for d in disk_io.values())
+        
         max_disk_temp = "N/A"
+        hottest_disk = ""
         if temps:
             disk_temps = []
             for source, entries in temps.items():
                 if any(s in source for s in ["sd", "nvme", "mmcblk", "hd"]):
                     for entry in entries:
                         if isinstance(entry.get('current'), (int, float)):
-                            disk_temps.append(entry['current'])
+                            disk_temps.append((entry['current'], source))
             if disk_temps:
-                max_temp = max(disk_temps)
+                max_temp, disk_name = max(disk_temps, key=lambda x: x[0])
                 max_disk_temp = f"{max_temp:.0f}°C"
+                hottest_disk = disk_name.split('_')[0] if '_' in disk_name else disk_name
 
-        # Network IO
-        net_total = data.get("network_io", {}).get("total", {}).get("rate", {})
-        net_up = net_total.get("tx_bytes_per_s", 0)
-        net_down = net_total.get("rx_bytes_per_s", 0)
-
-        # Disk IO
-        disk_io = data.get("disk_io", {})
-        total_read = sum(d.get("rate", {}).get("read_bytes_per_s", 0) for d in disk_io.values())
-        total_write = sum(d.get("rate", {}).get("write_bytes_per_s", 0) for d in disk_io.values())
-
-        # --- Color Coding ---
-        cpu_color = self._get_usage_color(cpu_percent)
-        ram_color = self._get_usage_color(ram_percent)
-        cpu_temp_color = self._get_temp_color(cpu_temp)
+        # Enhanced visual formatting with better spacing and colors
         disk_temp_color = self._get_temp_color(max_disk_temp)
 
-        # --- Compact Format for 24x43 Display (3 devices) ---
-        # Row budget: ~12 rows per device (43 rows - 2 header/footer = 41 / 3 ≈ 13)
-        metrics_text = (
-            f"[bold cyan]CPU[/bold cyan] [{cpu_color}]{cpu_percent:5.1f}%[/{cpu_color}] "
-            f"[{cpu_temp_color}]{cpu_temp:>5}[/{cpu_temp_color}]\n"
-            f"[bold cyan]RAM[/bold cyan] [{ram_color}]{ram_percent:5.1f}%[/{ram_color}]\n"
-            f"[bold green]NET[/bold green] ▲[yellow]{format_bytes(net_up):>7}[/yellow] "
-            f"▼[blue]{format_bytes(net_down):>7}[/blue]\n"
-            f"[bold magenta]DSK[/bold magenta] ◀[cyan]{format_bytes(total_read):>7}[/cyan] "
-            f"▶[yellow]{format_bytes(total_write):>7}[/yellow] "
-            f"[{disk_temp_color}]{max_disk_temp:>4}[/{disk_temp_color}]"
+        net_str = (
+            f"[bold green]NET:[/bold green]"
+            f"⬆[yellow]{format_bytes(net_up):>8}[/yellow]  "
+            f"⬇[blue]{format_bytes(net_down):>8}[/blue]"
         )
-
-        self.metrics_label.update(metrics_text)
+        disk_label = f"[{hottest_disk}]" if hottest_disk else ""
+        dsk_str = (
+            f"[bold magenta]DSK:[/bold magenta]"
+            f"R[cyan]{format_bytes(total_read):>8}[/cyan]  "
+            f"W[yellow]{format_bytes(total_write):>8}[/yellow]  "
+            f"[{disk_temp_color}]({max_disk_temp:>4}){disk_label}[/{disk_temp_color}]"
+        )
+        self.io_label.update(f"{net_str}\n{dsk_str}")
 
     def _get_usage_color(self, percent: float) -> str:
+        """Return color based on usage percentage."""
         if percent >= 90:
             return "red bold"
         elif percent >= 75:
@@ -138,6 +144,7 @@ class DeviceDisplay(Static):
             return "bright_green"
 
     def _get_temp_color(self, temp: str) -> str:
+        """Return color based on temperature."""
         if temp == "N/A":
             return "dim"
         try:
@@ -152,71 +159,54 @@ class DeviceDisplay(Static):
                 return "cyan"
         except (ValueError, AttributeError):
             return "dim"
-
+        
     def check_staleness(self, now: float):
         if now - self.last_update > 15:
-            self.stale_label.update("[bold yellow on black]⚠[/bold yellow on black]")
+            self.stale_label.update("[bold yellow on black] ⚠ STALE [/bold yellow on black]")
         else:
             self.stale_label.update("")
 
 
 class MonitorApp(App):
-    """Portrait-optimized hardware monitor for 3.5" 720x1280 display."""
+    """A Textual app to monitor hardware stats from MQTT."""
 
     CSS = """
-    /* Optimized for 24x43 character grid (3.5" display) */
-
     Screen {
+        align: center middle;
         background: $surface;
     }
-
     #devices_container {
-        layout: vertical;
+        layout: grid;
+        grid-size: 3;  /* 3 columns for 3 devices */
+        grid-gutter: 1 2;  /* vertical horizontal spacing */
         width: 100%;
-        height: 1fr;
-        padding: 0 1;
-        overflow-y: auto;
+        height: 100%;
+        padding: 1;
     }
-
     DeviceDisplay {
-        border: solid $accent;
+        border: heavy $accent;
         background: $panel;
-        height: auto;
-        min-height: 7;
-        padding: 0 1;
-        margin: 0;
+        height: 100%;
+        padding: 1 2;
     }
-
-    DeviceDisplay Label {
-        text-style: bold;
-    }
-
-    .title-row {
+    #title_bar {
         layout: horizontal;
         height: auto;
-        width: 100%;
-        padding-bottom: 0;
+        margin-bottom: 1;
     }
-
-    .title-row Label {
-        text-style: bold;
-    }
-
-    #title {
+    .title {
         width: 1fr;
         content-align: left middle;
+        text-style: bold;
     }
-
-    #stale {
+    .stale {
         width: auto;
         content-align: right middle;
     }
-
-    .metrics {
+    .data {
         height: auto;
-        padding: 0;
+        padding: 1 0;
         margin: 0;
-        content-align: left top;
     }
 
     Header {
@@ -238,7 +228,7 @@ class MonitorApp(App):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield Container(id="devices_container")
+        yield Grid(id="devices_container")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -255,16 +245,17 @@ class MonitorApp(App):
             self.mqtt_client.connect(BROKER_HOST, BROKER_PORT, 60)
             self.mqtt_client.loop_start()
         except Exception as e:
-            self.notify(f"MQTT Error: {e}", severity="error")
+            self.notify(f"MQTT Connection Error: {e}", severity="error")
 
     def on_connect(self, client, userdata, flags, rc, properties=None):
         if rc == 0:
             client.subscribe(TOPIC)
-            self.call_from_thread(self.notify, f"Connected: {TOPIC}")
+            self.call_from_thread(self.notify, f"Connected to MQTT Broker and subscribed to {TOPIC}")
         else:
-            self.call_from_thread(self.notify, f"Connect failed: {rc}", severity="error")
+            self.call_from_thread(self.notify, f"Failed to connect, return code {rc}", severity="error")
 
     def on_message(self, client, userdata, msg):
+        """The callback for when a PUBLISH message is received from the server."""
         try:
             payload = json.loads(msg.payload.decode())
             host = payload.get("host")
@@ -275,25 +266,29 @@ class MonitorApp(App):
             self.all_devices_data[host] = payload
 
             if host not in self.device_widgets:
+                # New device found, add to rotation
                 new_widget = DeviceDisplay(host_id=host)
                 self.device_widgets[host] = new_widget
                 self.display_order.append(host)
-                self.call_from_thread(self.notify, f"Device: {host}")
+                self.call_from_thread(self.notify, f"New device detected: {host}")
 
+            # Update widget data via call_from_thread to ensure thread safety
             self.call_from_thread(self.update_widget_data, host)
 
         except json.JSONDecodeError:
-            self.call_from_thread(self.notify, "Bad JSON", severity="warning")
+            self.call_from_thread(self.notify, "Received malformed JSON", severity="warning")
         except Exception as e:
-            self.call_from_thread(self.notify, f"Error: {e}", severity="error")
+            self.call_from_thread(self.notify, f"Error processing message: {e}", severity="error")
 
     def update_widget_data(self, host: str):
+        """Safely update a widget's data from the main thread."""
         if host in self.device_widgets and host in self.all_devices_data:
             widget = self.device_widgets[host]
             widget.device_data = self.all_devices_data[host]
             self.update_display()
 
     def rotate_devices(self) -> None:
+        """Rotate the displayed devices if there are more than fit on a page."""
         num_devices = len(self.display_order)
         if num_devices <= MAX_DEVICES_PER_PAGE:
             self.current_page = 0
@@ -304,24 +299,30 @@ class MonitorApp(App):
         self.update_display()
 
     def update_display(self) -> None:
+        """Update the visible widgets based on the current page."""
         container = self.query_one("#devices_container")
 
+        # Determine which slice of devices to show
         start_index = self.current_page * MAX_DEVICES_PER_PAGE
         end_index = start_index + MAX_DEVICES_PER_PAGE
 
         visible_hosts = [self.display_order[i] for i in range(len(self.display_order)) if start_index <= i < end_index]
 
+        # Mount only the widgets that should be visible
         current_widgets = {child.host_id: child for child in container.children if isinstance(child, DeviceDisplay)}
 
+        # Unmount widgets that are no longer visible
         for host_id, widget in current_widgets.items():
             if host_id not in visible_hosts:
                 widget.remove()
 
+        # Mount new widgets that should be visible
         for host_id in visible_hosts:
             if host_id not in current_widgets:
                 container.mount(self.device_widgets[host_id])
-
+    
     def check_stale_status(self) -> None:
+        """Periodically check if devices are stale."""
         now = time.time()
         for widget in self.device_widgets.values():
             widget.check_staleness(now)
